@@ -1,211 +1,150 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+import streamlit as st
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-class AxialAnalysisApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Axially Loaded Bars Analysis Module (拉压分析模块)")
-        self.root.geometry("1100x900") 
+# 設定網頁標題與佈局
+st.set_page_config(page_title="Axially Loaded Bars Analysis Module", layout="wide")
 
-        # --- 数据存储 ---
-        self.num_elements = 3
-        self.entries_elements = []
-        self.entries_nodes = []
+st.title("Axially Loaded Bars Analysis Module (拉壓分析模組)")
+st.markdown("將原本的 Tkinter 桌面版轉換為 Streamlit 網頁版，直接在表格中修改數據後點擊計算。")
 
-        # --- 单位变量 ---
-        self.u_len = tk.StringVar(value="mm")
-        self.u_area = tk.StringVar(value="mm2")
-        self.u_mod = tk.StringVar(value="GPa")
-        self.u_force = tk.StringVar(value="kN")
-        self.u_disp = tk.StringVar(value="mm")
+# --- 初始化 Session State 變數 ---
+if 'n_elem' not in st.session_state:
+    st.session_state['n_elem'] = 3
+if 'unit_system' not in st.session_state:
+    st.session_state['unit_system'] = 'SI (mm/kN)'
 
-        # --- 界面布局 ---
-        self.setup_ui()
+# --- 側邊欄：全局設定與單位 ---
+with st.sidebar:
+    st.header("⚙️ Settings (設定)")
+    
+    # 預設單位系統切換
+    st.subheader("Presets (預設系統)")
+    col1, col2 = st.columns(2)
+    if col1.button("US (in/lb)"):
+        st.session_state['unit_system'] = 'US (in/lb)'
+    if col2.button("SI (mm/kN)"):
+        st.session_state['unit_system'] = 'SI (mm/kN)'
 
-    def setup_ui(self):
-        # 1. 顶部控制栏
-        control_frame = tk.Frame(self.root, pady=5, padx=5, relief="raised", bd=1)
-        control_frame.pack(fill="x")
+    # 元素數量
+    n_elem = st.number_input("Element Count (單元數量):", min_value=1, max_value=20, value=st.session_state['n_elem'], step=1)
+    st.session_state['n_elem'] = n_elem
+
+    # 單位下拉選單
+    st.subheader("Units (單位)")
+    is_si = st.session_state['unit_system'] == 'SI (mm/kN)'
+    
+    u_len = st.selectbox("Length (長度)", ["mm", "m", "in", "ft"], index=0 if is_si else 2)
+    u_area = st.selectbox("Area (面積)", ["mm2", "m2", "in2", "ft2"], index=0 if is_si else 2)
+    u_mod = st.selectbox("Modulus (模數)", ["GPa", "MPa", "Pa", "ksi", "psi"], index=0 if is_si else 4)
+    u_force = st.selectbox("Force (力)", ["kN", "N", "kips", "lb"], index=0 if is_si else 3)
+    u_disp = st.selectbox("Deflection (位移)", ["mm", "m", "in", "ft"], index=0 if is_si else 2)
+
+# --- 生成預設數據表格 ---
+# 根據單位系統給予不同的預設值
+def_L = 100.0 if is_si else 10.0
+def_A = 100.0 if is_si else 1.0
+def_E = 200.0 if is_si else 29000.0
+
+n_node = n_elem + 1
+
+# 建立單元 DataFrame
+elem_data = {
+    f"L ({u_len})": [def_L] * n_elem,
+    f"A ({u_area})": [def_A] * n_elem,
+    f"E ({u_mod})": [def_E] * n_elem
+}
+df_elem_default = pd.DataFrame(elem_data)
+df_elem_default.index = [f"Elem {i+1}" for i in range(n_elem)]
+
+# 建立節點 DataFrame
+node_data = {
+    f"Force ({u_force})": [0.0] * n_node,
+    "Constraint (1=Fix, 0=Free)": [1 if i == 0 else 0 for i in range(n_node)]
+}
+df_node_default = pd.DataFrame(node_data)
+df_node_default.index = [f"Node {i+1}" for i in range(n_node)]
+
+# --- 主畫面：數據輸入區 ---
+st.subheader("📝 Input Data (輸入數據)")
+st.caption("您可以直接點擊下方表格內的數字進行修改 (You can directly edit the values in the tables below)")
+
+col_table1, col_table2 = st.columns(2)
+
+with col_table1:
+    st.markdown("**Element Properties (單元屬性)**")
+    df_elem = st.data_editor(df_elem_default, use_container_width=True)
+
+with col_table2:
+    st.markdown("**Node Loads & BCs (節點負載與邊界條件)**")
+    df_node = st.data_editor(df_node_default, use_container_width=True)
+
+# --- 計算與繪圖 ---
+st.markdown("---")
+if st.button("🚀 Compute & Plot (計算與繪圖)", type="primary"):
+    try:
+        # 提取數據
+        L = df_elem.iloc[:, 0].values.astype(float)
+        A = df_elem.iloc[:, 1].values.astype(float)
+        E = df_elem.iloc[:, 2].values.astype(float)
         
-        tk.Label(control_frame, text="Element Count:").pack(side="left", padx=5)
-        self.elem_count_var = tk.StringVar(value="3")
-        tk.Entry(control_frame, textvariable=self.elem_count_var, width=5).pack(side="left")
-        
-        tk.Button(control_frame, text="Reset Table", command=self.reset_tables).pack(side="left", padx=10)
-        
-        # 预设按钮
-        tk.Label(control_frame, text="|  Presets: ").pack(side="left", padx=10)
-        tk.Button(control_frame, text="US (in/lb)", command=self.set_imperial, bg="#e1f5fe").pack(side="left", padx=2)
-        tk.Button(control_frame, text="SI (mm/kN)", command=self.set_metric, bg="#e1f5fe").pack(side="left", padx=2)
+        Forces = df_node.iloc[:, 0].values.astype(float)
+        Constraints = df_node.iloc[:, 1].values.astype(int)
 
-        tk.Button(control_frame, text="Compute & Plot", command=self.calculate, bg="#c8e6c9", font=('Arial', 10, 'bold')).pack(side="right", padx=10)
-
-        # 2. 表格区域
-        self.main_pane = tk.PanedWindow(self.root, orient="vertical")
-        self.main_pane.pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.top_frame = tk.Frame(self.main_pane)
-        self.main_pane.add(self.top_frame)
-
-        # 2.1 单元表
-        self.elem_frame_container = tk.LabelFrame(self.top_frame, text="Element Properties", padx=5, pady=5)
-        self.elem_frame_container.pack(fill="x", padx=5, pady=5)
-        self.elem_table = tk.Frame(self.elem_frame_container)
-        self.elem_table.pack(fill="x")
-
-        # 2.2 单位栏
-        unit_bar = tk.LabelFrame(self.top_frame, text="Units & Settings", padx=5, pady=5, bg="#f0f0f0")
-        unit_bar.pack(fill="x", padx=5, pady=5)
-
-        def create_unit_combo(parent, label_text, var, options, col):
-            frame = tk.Frame(parent, bg="#f0f0f0")
-            frame.grid(row=0, column=col, padx=10)
-            tk.Label(frame, text=label_text, font=('Arial', 8), bg="#f0f0f0").pack(anchor="w")
-            cb = ttk.Combobox(frame, textvariable=var, values=options, width=7, state="readonly")
-            cb.pack()
-            cb.bind("<<ComboboxSelected>>", self.update_headers)
-
-        create_unit_combo(unit_bar, "Length", self.u_len, ["in", "ft", "mm", "m"], 0)
-        create_unit_combo(unit_bar, "Area", self.u_area, ["in2", "ft2", "mm2", "m2"], 1)
-        create_unit_combo(unit_bar, "Modulus", self.u_mod, ["psi", "ksi", "Pa", "MPa", "GPa"], 2)
-        ttk.Separator(unit_bar, orient="vertical").grid(row=0, column=3, sticky="ns", padx=10)
-        create_unit_combo(unit_bar, "Force", self.u_force, ["lb", "kips", "N", "kN"], 4)
-        create_unit_combo(unit_bar, "Deflection", self.u_disp, ["in", "ft", "mm", "m"], 5)
-
-        # 2.3 节点表
-        self.node_frame_container = tk.LabelFrame(self.top_frame, text="Node Loads & BCs", padx=5, pady=5)
-        self.node_frame_container.pack(fill="x", padx=5, pady=5)
-        self.node_table = tk.Frame(self.node_frame_container)
-        self.node_table.pack(fill="x")
-
-        # 3. 结果汇总区
-        self.result_frame = tk.LabelFrame(self.top_frame, text="Critical Results Summary", padx=5, pady=5, bg="#fff3e0")
-        self.result_frame.pack(fill="x", padx=5, pady=5)
-        self.lbl_max_force = tk.Label(self.result_frame, text="Max Force: N/A", font=('Arial', 10, 'bold'), bg="#fff3e0", fg="#d32f2f")
-        self.lbl_max_force.pack(side="left", padx=20)
-        self.lbl_max_disp = tk.Label(self.result_frame, text="Max Disp: N/A", font=('Arial', 10, 'bold'), bg="#fff3e0", fg="#1976d2")
-        self.lbl_max_disp.pack(side="left", padx=20)
-
-        # 4. 绘图区
-        self.plot_frame = tk.Frame(self.main_pane, bg="white", bd=2, relief="sunken")
-        self.main_pane.add(self.plot_frame)
-
-        self.reset_tables()
-
-    def set_imperial(self):
-        self.u_len.set("in"); self.u_area.set("in2"); self.u_mod.set("psi")
-        self.u_force.set("lb"); self.u_disp.set("in")
-        self.reset_tables()
-
-    def set_metric(self):
-        self.u_len.set("mm"); self.u_area.set("mm2"); self.u_mod.set("GPa")
-        self.u_force.set("kN"); self.u_disp.set("mm")
-        self.reset_tables()
-
-    def update_headers(self, event=None):
-        self.reset_tables()
-
-    def reset_tables(self):
-        for widget in self.elem_table.winfo_children(): widget.destroy()
-        for widget in self.node_table.winfo_children(): widget.destroy()
-        self.entries_elements.clear()
-        self.entries_nodes.clear()
-
-        try:
-            n_elem = int(self.elem_count_var.get())
-            n_node = n_elem + 1
-        except ValueError: return
-
-        # 样式
-        header_font = ('Arial', 9, 'bold'); header_color = "#3f51b5"
-        
-        # 单元表头
-        headers = ["#", f"L ({self.u_len.get()})", f"A ({self.u_area.get()})", f"E ({self.u_mod.get()})"]
-        for col, t in enumerate(headers): tk.Label(self.elem_table, text=t, font=header_font, fg=header_color).grid(row=0, column=col, padx=10)
-
-        # 默认值
-        is_metric = self.u_len.get() in ["mm", "m"]
-        def_L, def_A, def_E = ("100", "100", "200") if is_metric else ("10.0", "1.0", "29000")
-
+        # --- 剛度矩陣計算 ---
+        K = np.zeros((n_node, n_node))
+        F = np.array(Forces)
         for i in range(n_elem):
-            tk.Label(self.elem_table, text=str(i+1)).grid(row=i+1, column=0)
-            e_L = tk.Entry(self.elem_table, width=10, bg="#fffde7"); e_L.insert(0, def_L); e_L.grid(row=i+1, column=1)
-            e_A = tk.Entry(self.elem_table, width=10, bg="#fffde7"); e_A.insert(0, def_A); e_A.grid(row=i+1, column=2)
-            e_E = tk.Entry(self.elem_table, width=10, bg="#fffde7"); e_E.insert(0, def_E); e_E.grid(row=i+1, column=3)
-            self.entries_elements.append((e_L, e_A, e_E))
+            k = (E[i] * A[i]) / L[i]
+            K[i, i] += k
+            K[i, i+1] -= k
+            K[i+1, i] -= k
+            K[i+1, i+1] += k
 
-        # 节点表头
-        headers_n = ["#", f"Force ({self.u_force.get()})", "Constraint (1=Fix)"]
-        for col, t in enumerate(headers_n): tk.Label(self.node_table, text=t, font=header_font, fg=header_color).grid(row=0, column=col, padx=10)
-
+        # --- 邊界條件 (Penalty Method) ---
+        penalty = 1e20
         for i in range(n_node):
-            tk.Label(self.node_table, text=str(i+1)).grid(row=i+1, column=0)
-            e_P = tk.Entry(self.node_table, width=10, bg="#fffde7"); e_P.insert(0, "0.0"); e_P.grid(row=i+1, column=1)
-            e_BC = tk.Entry(self.node_table, width=10, bg="#fffde7"); e_BC.insert(0, "1" if i==0 else "0"); e_BC.grid(row=i+1, column=2)
-            self.entries_nodes.append((e_P, e_BC))
+            if Constraints[i] == 1:
+                K[i, i] *= penalty
+                F[i] = 0
 
-    def calculate(self):
-        try:
-            n_elem = len(self.entries_elements); n_node = n_elem + 1
-            L, A, E, Forces, Constraints = [], [], [], [], []
+        # --- 求解位移 ---
+        U = np.linalg.solve(K, F)
+        
+        # --- 計算內力 ---
+        Internal_Forces = []
+        for i in range(n_elem):
+            f = ((E[i] * A[i]) / L[i]) * (U[i+1] - U[i])
+            Internal_Forces.append(f)
 
-            for ent in self.entries_elements:
-                L.append(float(ent[0].get())); A.append(float(ent[1].get())); E.append(float(ent[2].get()))
-            for ent in self.entries_nodes:
-                Forces.append(float(ent[0].get())); Constraints.append(int(ent[1].get()))
-
-            # 刚度矩阵计算
-            K = np.zeros((n_node, n_node)); F = np.array(Forces)
-            for i in range(n_elem):
-                k = (E[i]*A[i])/L[i]
-                K[i,i]+=k; K[i,i+1]-=k; K[i+1,i]-=k; K[i+1,i+1]+=k
-
-            # 边界条件
-            penalty = 1e20
-            for i in range(n_node):
-                if Constraints[i] == 1: K[i,i] *= penalty; F[i] = 0
-
-            U = np.linalg.solve(K, F)
-            Internal_F = []
-            for i in range(n_elem):
-                f = ((E[i]*A[i])/L[i]) * (U[i+1] - U[i])
-                Internal_F.append(f)
-
-            self.draw_plots(n_elem, L, Internal_F, U)
-
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def draw_plots(self, n_elem, L, Internal_Forces, Displacements):
-        # --- 1. 寻找极值 ---
+        # --- 尋找極值 ---
         abs_forces = [abs(f) for f in Internal_Forces]
         max_f_idx = np.argmax(abs_forces)
         max_f_val = Internal_Forces[max_f_idx]
         
-        abs_disp = [abs(d) for d in Displacements]
+        abs_disp = [abs(d) for d in U]
         max_d_idx = np.argmax(abs_disp)
-        max_d_val = Displacements[max_d_idx]
+        max_d_val = U[max_d_idx]
 
-        # 更新汇总栏
-        self.lbl_max_force.config(text=f"Max Force: {max_f_val:.2f} {self.u_force.get()} @ Elem {max_f_idx+1}")
-        self.lbl_max_disp.config(text=f"Max Disp: {max_d_val:.4f} {self.u_disp.get()} @ Node {max_d_idx+1}")
+        # --- 顯示關鍵結果 ---
+        st.subheader("📊 Critical Results Summary (關鍵結果總結)")
+        res_col1, res_col2 = st.columns(2)
+        res_col1.metric(label=f"Max Force (最大內力) @ Elem {max_f_idx+1}", value=f"{max_f_val:.2f} {u_force}")
+        res_col2.metric(label=f"Max Disp. (最大位移) @ Node {max_d_idx+1}", value=f"{max_d_val:.4f} {u_disp}")
 
-        # --- 2. 准备绘图 ---
-        for widget in self.plot_frame.winfo_children(): widget.destroy()
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-        fig.patch.set_facecolor('#f0f0f0') 
-        plt.subplots_adjust(hspace=0.35, bottom=0.1, top=0.92, left=0.1, right=0.95)
+        # --- 繪圖 ---
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+        fig.patch.set_facecolor('#ffffff')
+        plt.subplots_adjust(hspace=0.3)
 
         x_coords = [0]
         cur_x = 0
-        for l in L: cur_x += l; x_coords.append(cur_x)
+        for l in L: 
+            cur_x += l
+            x_coords.append(cur_x)
 
-        # ==========================================
-        # Plot 1: 轴力图 (Axial Force)
-        # ==========================================
+        # 1. 軸力圖 (Axial Force Diagram)
         x_plot, y_plot = [], []
         for i in range(n_elem):
             x_plot.extend([x_coords[i], x_coords[i+1]])
@@ -213,91 +152,71 @@ class AxialAnalysisApp:
 
         ax1.plot(x_plot, y_plot, color='#3f51b5', linewidth=2)
         ax1.fill_between(x_plot, y_plot, 0, alpha=0.2, color='#3f51b5')
-        ax1.set_title("Axial Force Diagram", fontsize=10, fontweight='bold')
-        ax1.set_ylabel(f"Force ({self.u_force.get()})", fontsize=9)
+        ax1.set_title("Axial Force Diagram (軸力圖)", fontsize=12, fontweight='bold')
+        ax1.set_ylabel(f"Force ({u_force})", fontsize=10)
         ax1.grid(True, linestyle='--', alpha=0.6)
         
-        # 动态调整Y轴范围，为标签留出空间
         y_min, y_max = min(y_plot), max(y_plot)
         margin = (y_max - y_min) * 0.3 if y_max != y_min else abs(y_max)*0.5 + 1.0
         ax1.set_ylim(y_min - margin*0.5, y_max + margin)
 
-        # ★★★ 遍历标注每一个单元的轴力 (修复遮挡) ★★★
+        # 標註軸力
         for i in range(n_elem):
             mid_x = (x_coords[i] + x_coords[i+1]) / 2
             val = Internal_Forces[i]
             is_max = (i == max_f_idx)
             
             if is_max:
-                # 【最大值】：使用带箭头的标注，文字移到箭头尾部，防止遮挡数值
-                # 箭头指向 (mid_x, val)，文字位于上方
-                offset_y = margin * 1.3 # 文字向上偏移量
-                # 如果数值为负，且空间足够，也可以考虑向下偏移，这里默认向上
-                
+                offset_y = margin * 0.8 
                 ax1.annotate(f"MAX: {val:.2f}", 
                              xy=(mid_x, val), 
                              xytext=(mid_x, val + offset_y),
                              arrowprops=dict(facecolor='red', arrowstyle='->', connectionstyle="arc3"),
-                             fontsize=9, color='red', fontweight='bold', ha='center',
+                             fontsize=10, color='red', fontweight='bold', ha='center',
                              bbox=dict(facecolor='white', alpha=0.9, edgecolor='red', boxstyle='round,pad=0.2'))
             else:
-                # 【普通值】：仅显示数值
-                
-                # 计算力值范围的自适应偏移（避免固定值在不同量级下偏移过大/过小）
                 force_range = max(Internal_Forces) - min(Internal_Forces)
-                offset = force_range * 0.03 if force_range != 0 else 1.0  # 3%的力值范围作为偏移
-
-# 标注文字（向上偏移offset）
+                offset = force_range * 0.05 if force_range != 0 else 1.0
                 ax1.text(mid_x, val + offset, f"{val:.2f}", 
                         ha='center', va='bottom', 
-                        fontsize=8, color='#1a237e',
+                        fontsize=9, color='#1a237e',
                         bbox=dict(facecolor='white', alpha=0.6, edgecolor='none', pad=1))
 
-        # ==========================================
-        # Plot 2: 位移图 (Displacement)
-        # ==========================================
-        ax2.plot(x_coords, Displacements, 'r-o', linewidth=2, markersize=5)
-        ax2.set_title("Displacement Diagram", fontsize=10, fontweight='bold')
-        ax2.set_ylabel(f"Displacement ({self.u_disp.get()})", fontsize=9)
-        ax2.set_xlabel(f"Position ({self.u_len.get()})", fontsize=9)
+        # 2. 位移圖 (Displacement Diagram)
+        ax2.plot(x_coords, U, 'r-o', linewidth=2, markersize=6)
+        ax2.set_title("Displacement Diagram (位移圖)", fontsize=12, fontweight='bold')
+        ax2.set_ylabel(f"Displacement ({u_disp})", fontsize=10)
+        ax2.set_xlabel(f"Position ({u_len})", fontsize=10)
         ax2.grid(True, linestyle='--', alpha=0.6)
         
-        # 动态调整Y轴范围
-        y_d_min, y_d_max = min(Displacements), max(Displacements)
+        y_d_min, y_d_max = min(U), max(U)
         margin_d = (y_d_max - y_d_min) * 0.3 if y_d_max != y_d_min else abs(y_d_max)*0.5 + 0.1
         ax2.set_ylim(y_d_min - margin_d, y_d_max + margin_d)
 
-        # ★★★ 遍历标注每一个节点的位移 (修复遮挡) ★★★
-        for i, (x, y) in enumerate(zip(x_coords, Displacements)):
+        # 標註位移
+        for i, (x, y) in enumerate(zip(x_coords, U)):
             is_max = (i == max_d_idx)
             
             if is_max:
-                # 【最大值】：带箭头标注
-                # 为了显眼，给一个固定的偏移距离
-                arrow_offset = 30 if y >= 0 else -30 
-                
+                arrow_offset = 40 if y >= 0 else -40 
                 ax2.annotate(f"MAX: {y:.4f}", 
                              xy=(x, y), 
                              xytext=(0, arrow_offset), 
                              textcoords='offset points',
                              arrowprops=dict(facecolor='red', arrowstyle='->'),
-                             fontsize=9, color='red', fontweight='bold', ha='center', va='center',
+                             fontsize=10, color='red', fontweight='bold', ha='center', va='center',
                              bbox=dict(facecolor='white', alpha=0.9, edgecolor='red', boxstyle='round,pad=0.2'))
             else:
-                # 【普通值】：错位排布
-                y_offset = 12 if i % 2 == 0 else -18
+                y_offset = 15 if i % 2 == 0 else -20
                 ax2.annotate(f"{y:.4f}", 
                              xy=(x, y), 
                              xytext=(0, y_offset), 
                              textcoords='offset points',
                              ha='center', va='center',
-                             fontsize=8, color='#b71c1c',
+                             fontsize=9, color='#b71c1c',
                              bbox=dict(facecolor='white', alpha=0.6, edgecolor='none', pad=0.5))
 
-        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = AxialAnalysisApp(root)
-    root.mainloop()
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"Error during calculation (計算時發生錯誤): {e}")
